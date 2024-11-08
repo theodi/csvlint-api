@@ -10,28 +10,32 @@ set :server, 'webrick'
 post '/validate' do
   content_type :json
 
-  # Retrieve file, schema, and dialect from the request
-  csv_file = params[:file]
-  schema_file = params[:schema]
+  # Retrieve the CSV source (either URL or file path)
+  csv_source = params[:csvUrl] || (params[:file] && params[:file][:tempfile].path)
+  schema_source = params[:schemaUrl] || (params[:schema] && params[:schema][:tempfile].path)
   dialect = JSON.parse(params[:dialect] || '{}')  # Parse dialect JSON if provided
 
-  # Generate a unique temporary file name
-  csv_tempfile = "temp_#{SecureRandom.uuid}.csv"
-  schema_tempfile = "temp_schema_#{SecureRandom.uuid}.json" if schema_file
+  # Track whether the sources are local files, so we know if we should delete them later
+  csv_local_file = !params[:csvUrl] && csv_source
+  schema_local_file = !params[:schemaUrl] && schema_source
 
   begin
-    # Save the CSV file temporarily
-    File.open(csv_tempfile, "wb") { |f| f.write(csv_file[:tempfile].read) }
-
-    # Save schema file if provided
+    # Load schema if provided as a URL or file
     schema = nil
-    if schema_file
-      File.open(schema_tempfile, "wb") { |f| f.write(schema_file[:tempfile].read) }
-      schema = Csvlint::Schema.load_from_json(File.new(schema_tempfile))
+    if schema_source
+      schema = params[:schemaUrl] ? Csvlint::Schema.load_from_uri(params[:schemaUrl]) : Csvlint::Schema.load_from_uri(File.new(schema_source))
     end
 
-    # Create the CSV validator with dialect options and schema
-    validator = Csvlint::Validator.new(File.new(csv_tempfile), dialect, schema)
+    if dialect.empty?
+      dialect = nil
+    end
+
+    if (csv_local_file)
+      validator = Csvlint::Validator.new(File.new(csv_source), dialect, schema)
+    else
+      validator = Csvlint::Validator.new(csv_source, dialect, schema)
+    end
+
 
     # Perform validation
     validator.validate
@@ -79,9 +83,9 @@ post '/validate' do
     # Handle errors gracefully and return the error message as JSON
     result = { error: "Validation failed: #{e.message}" }
   ensure
-    # Ensure temporary files are deleted
-    File.delete(csv_tempfile) if File.exist?(csv_tempfile)
-    File.delete(schema_tempfile) if schema_file && File.exist?(schema_tempfile)
+    # Ensure local temporary files are deleted
+    File.delete(csv_source) if csv_local_file && File.exist?(csv_source)
+    File.delete(schema_source) if schema_local_file && File.exist?(schema_source)
   end
 
   # Return the result as JSON
